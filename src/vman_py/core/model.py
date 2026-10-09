@@ -1,3 +1,6 @@
+from typing import Any
+
+type EnvironmentStatus = Any
 # Python环境对象
 class PyEnv:
     def __init__(self):

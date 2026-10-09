@@ -8,6 +8,9 @@ import asyncio
 # 返回PyEnv对象列表，以及一些必要的信息
 type ScanResult = tuple[list[PyEnv] | None, Any]
 
+# 扫描状态
+type ScanStatus = Any
+
 # TODO: 完善默认忽略的目录列表
 DEFAULT_IGNORE_LIST = {"node_moudules", "targets"}
 
