@@ -1,9 +1,10 @@
+import asyncio
 from vman_py.core.scan import PyEnvScanner
 
-def main():
+async def main():
     scanner = PyEnvScanner()
-    result = scanner.scan(".")
+    result = await scanner.scan(".")
     print(result)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

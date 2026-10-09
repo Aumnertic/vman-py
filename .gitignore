@@ -40,3 +40,6 @@ vman.toml
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# neovim 
+nvim.log
