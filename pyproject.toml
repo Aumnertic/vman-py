@@ -1,8 +1,10 @@
 [project]
 name = "vman-py"
 version = "0.1.0"
-description = "Add your description here"
+description = "Scan, inventory, and check Python virtual environments."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "aumnertic", email = "hznuzc@gmail.com" }
 ]
