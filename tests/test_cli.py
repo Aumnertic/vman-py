@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import io
 import json
 import os
@@ -140,7 +141,10 @@ class CliTests(unittest.TestCase):
         self.make_cfg("invalid", "bad config\n")
         code, output, _ = self.run_cli("scan", str(self.scan_root))
         self.assertEqual(code, 1)
-        self.assertIn("跳过配置", output)
+        self.assertNotIn("配置解析失败", output)
+        self.assertIn("FAILED", output)
+        log = (self.manifest.parent / "logs/scan.log").read_text(encoding="utf-8")
+        self.assertIn("配置解析失败", log)
         with VmanService(self.manifest) as service:
             self.assertEqual(len(Inventory.list_envs(service.conn)), 1)
             self.assertEqual(
@@ -149,10 +153,51 @@ class CliTests(unittest.TestCase):
             )
 
     def test_missing_scan_root_returns_error_without_traceback(self):
-        code, _, error = self.run_cli("scan", str(self.root / "missing"))
+        code, output, error = self.run_cli("scan", str(self.root / "missing"))
         self.assertEqual(code, 1)
-        self.assertIn("vman:", error)
-        self.assertNotIn("Traceback", error)
+        self.assertEqual(error, "")
+        self.assertIn("FAILED", output)
+        self.assertNotIn("Traceback", output)
+        with VmanService(self.manifest) as service:
+            self.assertEqual(
+                service.conn.execute("SELECT status, envs_found FROM scan").fetchone(),
+                (2, 0),
+            )
+
+    def test_directory_errors_are_logged_and_status_is_saved(self):
+        cfg = self.make_cfg("good")
+        broken = self.scan_root / "broken"
+        broken.mkdir()
+        original_scandir = os.scandir
+        for error, expected_status, expected_code in (
+            (PermissionError("denied"), 1, 0),
+            (OSError(errno.EIO, "disk failure"), 2, 1),
+        ):
+            with self.subTest(error=error):
+
+                def broken_scandir(path, error=error):
+                    if Path(path) == broken:
+                        raise error
+                    return original_scandir(path)
+
+                with patch("vman_py.core.scan.os.scandir", side_effect=broken_scandir):
+                    code, output, stderr = self.run_cli("scan", str(self.scan_root))
+                self.assertEqual(code, expected_code)
+                self.assertEqual(stderr, "")
+                self.assertNotIn(str(broken), output)
+                with VmanService(self.manifest) as service:
+                    row = service.conn.execute(
+                        "SELECT status, envs_found FROM scan ORDER BY id DESC LIMIT 1"
+                    ).fetchone()
+                    self.assertEqual(row, (expected_status, 1))
+                    self.assertEqual(
+                        Inventory.list_envs(service.conn)[0].path, cfg.parent
+                    )
+                log = (self.manifest.parent / "logs/scan.log").read_text(
+                    encoding="utf-8"
+                )
+                self.assertIn(str(broken), log)
+                self.assertIn("扫描入库完成", log)
 
     def test_invalid_arguments_fail_before_opening_inventory(self):
         for args in (

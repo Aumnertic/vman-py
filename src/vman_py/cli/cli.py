@@ -99,7 +99,7 @@ async def _run(command: str, options: StorageArgs) -> int:
             detail = (
                 "完成"
                 if result.status is ScanStatus.SUCCESS
-                else "完成（有配置被跳过）"
+                else "FAILED（详见扫描日志）"
             )
             print(
                 f"扫描 #{result.scan_id} {detail}，发现 {len(result.environments)} 个环境。"

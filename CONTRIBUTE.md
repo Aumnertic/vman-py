@@ -38,6 +38,7 @@ uv run vman list --fresh -m ./local-state/manifest.json
 | `src/vman_py/core/scan_result_converter.py` | 将扫描结果转换为 schema 对象 |
 | `src/vman_py/core/inventory.py` | SQLite 初始化、查询、更新及扫描记录保存 |
 | `src/vman_py/core/manifest.py` | 持久化分配扫描编号 |
+| `src/vman_py/core/log.py` | 配置数据目录下的文件日志及轮转 |
 | `src/vman_py/core/schema.py`、`model.py` | 库存 schema 和扫描环境模型 |
 | `tests/` | 参数解析、扫描、持久化及 CLI 集成测试 |
 

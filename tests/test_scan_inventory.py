@@ -1,13 +1,15 @@
 import asyncio
+import errno
 import io
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from vman_py.core.inventory import Inventory
 from vman_py.core.model import EnvironmentStatus, PyEnv
@@ -21,6 +23,7 @@ class ScanInventoryTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name).resolve()
         self.manifest_path = self.root / "state/manifest.json"
+        self.log_path = self.manifest_path.parent / "logs/scan.log"
         self.conn = sqlite3.connect(":memory:")
         self.addCleanup(self.conn.close)
         Inventory.init_db(self.conn)
@@ -31,10 +34,13 @@ class ScanInventoryTests(unittest.TestCase):
         cfg.write_text(content, encoding="utf-8")
         return cfg
 
+    def new_scanner(self):
+        scanner = PyEnvScanner(manifest_path=self.manifest_path)
+        self.addCleanup(scanner.close)
+        return scanner
+
     def scan(self):
-        return asyncio.run(
-            PyEnvScanner(manifest_path=self.manifest_path).scan(str(self.root))
-        )
+        return asyncio.run(self.new_scanner().scan(str(self.root)))
 
     def test_scan_convert_and_persist(self):
         cfg = self.make_cfg()
@@ -71,7 +77,7 @@ class ScanInventoryTests(unittest.TestCase):
         self.assertIsInstance(stored[0].id, int)
         self.assertEqual(stored[0].first_seen_scan_id, scan_id)
 
-    def test_bad_config_is_printed_and_skipped(self):
+    def test_bad_config_is_logged_and_skipped(self):
         good = self.make_cfg("good")
         bad = self.make_cfg("bad", "invalid config\n")
         output = io.StringIO()
@@ -79,13 +85,15 @@ class ScanInventoryTests(unittest.TestCase):
             result = self.scan()
         self.assertEqual(result.status, ScanStatus.FAILED)
         self.assertEqual([env.cfg_path for env in result.environments], [good])
-        self.assertIn(str(bad), output.getvalue())
-        self.assertIn("跳过配置", output.getvalue())
+        self.assertEqual(output.getvalue(), "")
+        log = self.log_path.read_text(encoding="utf-8")
+        self.assertIn(str(bad), log)
+        self.assertIn("配置解析失败", log)
         scan, envs = ScanResultConverter.convert(result)
         self.assertEqual(scan.environments_found, 1)
         self.assertEqual(len(envs), 1)
 
-    def test_read_errors_are_printed_and_skipped(self):
+    def test_read_errors_are_logged_and_skipped(self):
         good = self.make_cfg("good")
         missing = self.root / "missing/pyvenv.cfg"
         undecodable = self.make_cfg("undecodable")
@@ -93,12 +101,14 @@ class ScanInventoryTests(unittest.TestCase):
         output = io.StringIO()
         with redirect_stdout(output):
             envs, status = asyncio.run(
-                PyEnvScanner()._cfg_handle([missing, good, undecodable])
+                self.new_scanner()._cfg_handle([missing, good, undecodable])
             )
         self.assertEqual(status, ScanStatus.FAILED)
         self.assertEqual([env.cfg_path for env in envs], [good])
-        self.assertIn(str(missing), output.getvalue())
-        self.assertIn(str(undecodable), output.getvalue())
+        self.assertEqual(output.getvalue(), "")
+        log = self.log_path.read_text(encoding="utf-8")
+        self.assertIn(str(missing), log)
+        self.assertIn(str(undecodable), log)
 
     def test_empty_scan_is_successful(self):
         result = self.scan()
@@ -120,10 +130,9 @@ class ScanInventoryTests(unittest.TestCase):
         self.assertEqual(scan.id, second.scan_id)
 
     def test_scan_failure_does_not_reuse_id(self):
-        with self.assertRaises(FileNotFoundError):
-            asyncio.run(
-                PyEnvScanner(self.manifest_path).scan(str(self.root / "missing"))
-            )
+        result = asyncio.run(self.new_scanner().scan(str(self.root / "missing")))
+        self.assertEqual(result.status, ScanStatus.FAILED)
+        self.assertEqual(result.scan_id, 1)
         self.assertEqual(self.scan().scan_id, 2)
 
     def test_converter_supports_windows_layout_and_managers(self):
@@ -224,7 +233,7 @@ class ScanInventoryTests(unittest.TestCase):
         originals = {env.path: env for env in Inventory.list_envs(self.conn)}
         missing.unlink()  # 环境目录仍在，但已经没有 pyvenv.cfg。
 
-        checked = asyncio.run(PyEnvScanner(self.manifest_path).check(self.conn))
+        checked = asyncio.run(self.new_scanner().check(self.conn))
         stored = Inventory.list_envs(self.conn)
         self.assertEqual(checked, stored)
         self.assertEqual(len(stored), 2)
@@ -253,7 +262,7 @@ class ScanInventoryTests(unittest.TestCase):
         Inventory.upsert_envs(self.conn, envs)
         cfg.unlink()
         cfg.parent.rmdir()
-        asyncio.run(PyEnvScanner(self.manifest_path).check(self.conn))
+        asyncio.run(self.new_scanner().check(self.conn))
         self.assertEqual(
             Inventory.list_envs(self.conn)[0].status, EnvironmentStatus.MISS
         )
@@ -264,7 +273,7 @@ class ScanInventoryTests(unittest.TestCase):
         Inventory.upsert_envs(
             self.conn, [replace(envs[0], status=EnvironmentStatus.MISS)]
         )
-        asyncio.run(PyEnvScanner(self.manifest_path).check(self.conn))
+        asyncio.run(self.new_scanner().check(self.conn))
         self.assertEqual(
             Inventory.list_envs(self.conn)[0].status, EnvironmentStatus.LIVE
         )
@@ -274,21 +283,188 @@ class ScanInventoryTests(unittest.TestCase):
         _, envs = ScanResultConverter.convert(self.scan())
         Inventory.upsert_envs(self.conn, envs)
         original = Inventory.list_envs(self.conn)
+        original_stat = Path.stat
+
+        def denied_stat(path, *args, **kwargs):
+            if path == cfg:
+                raise PermissionError("denied")
+            return original_stat(path, *args, **kwargs)
+
         output = io.StringIO()
         with (
-            patch("vman_py.core.scan.Path.stat", side_effect=PermissionError("denied")),
+            patch(
+                "vman_py.core.scan.Path.stat", autospec=True, side_effect=denied_stat
+            ),
             redirect_stdout(output),
         ):
-            checked = asyncio.run(PyEnvScanner(self.manifest_path).check(self.conn))
+            checked = asyncio.run(self.new_scanner().check(self.conn))
         self.assertEqual(checked, [])
         self.assertEqual(Inventory.list_envs(self.conn), original)
-        self.assertIn(str(cfg.parent), output.getvalue())
-        self.assertIn("denied", output.getvalue())
+        self.assertEqual(output.getvalue(), "")
+        log = self.log_path.read_text(encoding="utf-8")
+        self.assertIn(str(cfg.parent), log)
+        self.assertIn("denied", log)
 
     def test_check_empty_inventory_does_not_allocate_scan_id(self):
-        checked = asyncio.run(PyEnvScanner(self.manifest_path).check(self.conn))
+        checked = asyncio.run(self.new_scanner().check(self.conn))
         self.assertEqual(checked, [])
         self.assertFalse(self.manifest_path.exists())
+
+    def test_directory_permission_error_is_logged_without_failing_scan(self):
+        cfg = self.make_cfg("good")
+        blocked = self.root / "blocked"
+        blocked.mkdir()
+        original_scandir = os.scandir
+
+        def denied_scandir(path):
+            if Path(path) == blocked:
+                raise PermissionError("denied")
+            return original_scandir(path)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            patch("vman_py.core.scan.os.scandir", side_effect=denied_scandir),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            result = self.scan()
+        self.assertEqual(result.status, ScanStatus.SUCCESS)
+        self.assertEqual([env.cfg_path for env in result.environments], [cfg])
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertEqual(stderr.getvalue(), "")
+        log = self.log_path.read_text(encoding="utf-8")
+        self.assertIn(str(blocked), log)
+        self.assertIn("WARNING", log)
+        self.assertIn("扫描开始", log)
+        self.assertIn("status=SUCCESS envs_found=1", log)
+
+    def test_inaccessible_root_is_skipped_without_failure(self):
+        with patch(
+            "vman_py.core.scan.os.scandir", side_effect=PermissionError("denied")
+        ):
+            result = self.scan()
+        self.assertEqual(result.environments, [])
+        self.assertEqual(result.status, ScanStatus.SUCCESS)
+        self.assertIn(str(self.root), self.log_path.read_text(encoding="utf-8"))
+
+    def test_disappearing_subdirectory_does_not_fail_scan(self):
+        cfg = self.make_cfg("good")
+        disappearing = self.root / "disappearing"
+        disappearing.mkdir()
+        original_scandir = os.scandir
+        for error_type in (FileNotFoundError, NotADirectoryError):
+            with self.subTest(error_type=error_type):
+
+                def disappearing_scandir(path, error_type=error_type):
+                    if Path(path) == disappearing:
+                        raise error_type("changed during scan")
+                    return original_scandir(path)
+
+                with patch(
+                    "vman_py.core.scan.os.scandir", side_effect=disappearing_scandir
+                ):
+                    result = self.scan()
+                self.assertEqual(result.status, ScanStatus.SUCCESS)
+                self.assertEqual([env.cfg_path for env in result.environments], [cfg])
+
+    def test_io_error_marks_failure_and_continues_healthy_siblings(self):
+        cfg = self.make_cfg("good")
+        broken = self.root / "broken"
+        broken.mkdir()
+        original_scandir = os.scandir
+
+        def broken_scandir(path):
+            if Path(path) == broken:
+                raise OSError(errno.EIO, "disk failure")
+            return original_scandir(path)
+
+        with patch("vman_py.core.scan.os.scandir", side_effect=broken_scandir):
+            result = self.scan()
+        self.assertEqual(result.status, ScanStatus.FAILED)
+        self.assertEqual([env.cfg_path for env in result.environments], [cfg])
+        log = self.log_path.read_text(encoding="utf-8")
+        self.assertIn(str(broken), log)
+        self.assertIn("disk failure", log)
+        self.assertIn("status=FAILED", log)
+
+    def test_unexpected_worker_exception_does_not_discard_other_tasks(self):
+        cfg = self.make_cfg("good")
+        broken = self.root / "broken"
+        broken.mkdir()
+        scanner = self.new_scanner()
+        original_scan_folder = scanner._scan_folder
+
+        def broken_scan_folder(path, is_root=False):
+            if path == broken:
+                raise RuntimeError("worker broken")
+            return original_scan_folder(path, is_root)
+
+        with patch.object(scanner, "_scan_folder", side_effect=broken_scan_folder):
+            result = asyncio.run(scanner.scan(str(self.root)))
+        self.assertEqual(result.status, ScanStatus.FAILED)
+        self.assertEqual([env.cfg_path for env in result.environments], [cfg])
+        self.assertIn("worker broken", self.log_path.read_text(encoding="utf-8"))
+
+    def test_entry_errors_do_not_discard_other_entries(self):
+        cfg = self.make_cfg("good")
+        bad = MagicMock()
+        bad.path = str(self.root / "bad-entry")
+        good = MagicMock()
+        good.name = "good"
+        good.path = str(cfg.parent)
+        good.is_file.return_value = False
+        good.is_dir.return_value = True
+        original_scandir = os.scandir
+        for error, expected_status in (
+            (PermissionError("denied"), ScanStatus.SUCCESS),
+            (OSError(errno.EIO, "disk failure"), ScanStatus.FAILED),
+        ):
+            with self.subTest(error=error):
+                bad.is_file.side_effect = error
+                entries = MagicMock()
+                entries.__enter__.return_value = [bad, good]
+
+                def entry_scandir(path, entries=entries):
+                    if Path(path) == self.root:
+                        return entries
+                    return original_scandir(path)
+
+                with patch("vman_py.core.scan.os.scandir", side_effect=entry_scandir):
+                    result = self.scan()
+                self.assertEqual(result.status, expected_status)
+                self.assertEqual([env.cfg_path for env in result.environments], [cfg])
+
+    def test_config_permission_error_does_not_fail_scan(self):
+        good = self.make_cfg("good")
+        blocked = self.make_cfg("blocked")
+        scanner = self.new_scanner()
+        original_read = scanner._read_file_lines
+
+        def denied_read(cfg):
+            if cfg == blocked:
+                raise PermissionError("denied")
+            return original_read(cfg)
+
+        with patch.object(scanner, "_read_file_lines", side_effect=denied_read):
+            result = asyncio.run(scanner.scan(str(self.root)))
+        self.assertEqual(result.status, ScanStatus.SUCCESS)
+        self.assertEqual([env.cfg_path for env in result.environments], [good])
+        self.assertIn(str(blocked), self.log_path.read_text(encoding="utf-8"))
+
+    def test_deleted_config_during_scan_is_skipped_without_failure(self):
+        missing = self.root / "gone/pyvenv.cfg"
+        environments, status = asyncio.run(self.new_scanner()._cfg_handle([missing]))
+        self.assertEqual(environments, [])
+        self.assertEqual(status, ScanStatus.SUCCESS)
+
+    def test_invalid_root_and_executor_settings_return_failed_result(self):
+        file_root = self.root / "file"
+        file_root.touch()
+        for root, workers in ((file_root, 4), (self.root, 0)):
+            with self.subTest(root=root, workers=workers):
+                result = asyncio.run(self.new_scanner().scan(str(root), workers))
+                self.assertEqual(result.status, ScanStatus.FAILED)
+                self.assertEqual(result.environments, [])
 
     def test_save_scan_updates_existing_record(self):
         scan, _ = ScanResultConverter.convert(self.scan())

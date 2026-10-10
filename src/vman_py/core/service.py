@@ -34,6 +34,7 @@ class VmanService:
         traceback: TracebackType | None,
     ) -> None:
         self.conn.close()
+        self.scanner.close()
 
     async def list_envs(self, fresh: bool = False) -> list[Environment]:
         if fresh:
@@ -46,9 +47,14 @@ class VmanService:
     async def scan(self, path: str | Path = "~") -> ScanResult:
         await self.check()
         result = await self.scanner.scan(str(path))
-        scan, environments = ScanResultConverter.convert(result)
-        with self.conn:
-            self.conn.execute("BEGIN")
-            Inventory.save_scan(self.conn, scan)
-            Inventory.upsert_envs(self.conn, environments)
+        try:
+            scan, environments = ScanResultConverter.convert(result)
+            with self.conn:
+                self.conn.execute("BEGIN")
+                Inventory.save_scan(self.conn, scan)
+                Inventory.upsert_envs(self.conn, environments)
+        except Exception:
+            self.scanner.logger.exception("扫描入库失败 scan_id=%s", result.scan_id)
+            raise
+        self.scanner.logger.info("扫描入库完成 scan_id=%s", result.scan_id)
         return result
