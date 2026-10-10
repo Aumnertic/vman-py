@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from pathlib import Path
-from .scan import ScanStatus
+
 from .model import EnvironmentStatus
+from .scan import ScanStatus
+
 
 @dataclass
 class Environment:
@@ -24,6 +26,7 @@ class Environment:
 
     size_bytes: int | None
     size_updated_at: int | None
+
 
 @dataclass
 class Scan:

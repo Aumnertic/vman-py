@@ -7,9 +7,12 @@ authors = [
     { name = "aumnertic", email = "hznuzc@gmail.com" }
 ]
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "pydantic>=2.14.0",
+]
 
 [project.scripts]
+vman = "vman_py.cli.cli:main"
 vman-py = "vman_py:main"
 
 [build-system]
