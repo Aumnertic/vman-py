@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from vman_py.core.config import Config
 from vman_py.core.manifest import Manifest
 
 
@@ -101,3 +102,16 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(
             Path(process.stdout.strip()), self.root / "vman-py/manifest.json"
         )
+
+    def test_default_falls_back_to_cwd_when_state_dir_is_unusable(self):
+        blocker = self.root / "blocker"
+        blocker.write_text("", encoding="utf-8")
+        self.assertEqual(
+            Config(state_dir=blocker).manifest_path(), Path.cwd() / "manifest.json"
+        )
+
+    def test_raises_when_state_dir_and_cwd_are_unusable(self):
+        with patch("tempfile.NamedTemporaryFile", side_effect=OSError("denied")):
+            with self.assertRaises(OSError):
+                Config(state_dir=self.root / "state").manifest_path()
+
