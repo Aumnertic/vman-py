@@ -4,16 +4,16 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
-from .config import DEFAULT_MANIFEST_PATH
+from .config import Config
 
 
 class Manifest:
     """在 manifest.json 中保存最后分配的扫描编号。"""
 
     def __init__(self, path: str | Path | None = None):
-        self.path = Path(
-            path if path is not None else DEFAULT_MANIFEST_PATH
-        ).expanduser()
+        if path is None:
+            path = Config().manifest_path()
+        self.path = Path(path).expanduser()
 
     def next_scan_id(self) -> int:
         self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -16,7 +16,6 @@ from pydantic import BaseModel, Field
 
 from vman_py.cli.argly import parse
 from vman_py.cli.cli import ScanArgs, build_parser, main
-from vman_py.core.config import DEFAULT_MANIFEST_PATH
 from vman_py.core.inventory import Inventory
 from vman_py.core.model import EnvironmentStatus
 from vman_py.core.service import VmanService
@@ -49,7 +48,7 @@ class CliTests(unittest.TestCase):
         arguments.pop("command")
         defaults = ScanArgs.model_validate(arguments)
         self.assertEqual(defaults.path, Path("~"))
-        self.assertEqual(defaults.manifest, DEFAULT_MANIFEST_PATH)
+        self.assertIsNone(defaults.manifest)
         for flag in ("-m", "--manifest"):
             with self.subTest(flag=flag):
                 arguments = vars(parser.parse_args(["scan", flag, str(self.manifest)]))

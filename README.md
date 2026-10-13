@@ -55,8 +55,10 @@ uv run vman check -m ./state/manifest.json
 ## 存储与扫描编号
 
 manifest 默认位于 `~/.local/state/vman-py/manifest.json`；设置
-`XDG_STATE_HOME` 时使用该目录下的 `vman-py/manifest.json`。SQLite 数据库
-保存在 manifest 旁，文件名追加 `.sqlite3`，例如 `manifest.json.sqlite3`。
+`XDG_STATE_HOME` 时使用该目录下的 `vman-py/manifest.json`。如果该位置无法创建
+或不可写，则退回当前目录的 `manifest.json`；当前目录同样不可写时命令直接报错退出。
+SQLite 数据库保存在 manifest 旁，文件名追加 `.sqlite3`，例如
+`manifest.json.sqlite3`。
 首次使用时自动创建所需目录和数据库。使用同一个 manifest 路径即可在下次运行时
 继续编号并访问同一份环境库存；使用不同路径可以维护不同的库存。
 
@@ -95,7 +97,8 @@ CLI 尚未提供并发数参数，该验收项保留在 [#5](https://github.com/
 ## 扫描日志
 
 扫描和检查日志仅写入数据目录的 `logs/scan.log`，不打印到终端。
-默认路径为 `~/.local/state/vman-py/logs/scan.log`，也遵循 `XDG_STATE_HOME`。
+默认路径为 `~/.local/state/vman-py/logs/scan.log`，也遵循 `XDG_STATE_HOME`；
+manifest 退回当前目录时，日志位于当前目录的 `logs/scan.log`。
 指定 `-m ./state/manifest.json` 时，日志位于 `./state/logs/scan.log`。
 
 日志包含扫描编号、根目录、起止事件、结果状态、发现数量、检查汇总、

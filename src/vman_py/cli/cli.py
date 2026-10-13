@@ -9,7 +9,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from vman_py.core.config import DEFAULT_MANIFEST_PATH
+from vman_py.core.config import Config
 from vman_py.core.model import EnvironmentStatus
 from vman_py.core.scan import ScanStatus
 from vman_py.core.schema import Environment
@@ -21,12 +21,12 @@ from .argly import add_arguments
 class StorageArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    manifest: Path = Field(
-        default=DEFAULT_MANIFEST_PATH,
+    manifest: Path | None = Field(
+        default=None,
         json_schema_extra={
             "flags": ["-m", "--manifest"],
             "metavar": "MANIFEST_PATH",
-            "help": f"manifest 文件路径（默认：{DEFAULT_MANIFEST_PATH}）",
+            "help": "manifest 文件路径（默认：状态目录，不可写则退回当前目录）",
         },
     )
 
@@ -93,7 +93,10 @@ def _print_envs(environments: list[Environment]) -> None:
 
 
 async def _run(command: str, options: StorageArgs) -> int:
-    with VmanService(options.manifest) as service:
+    manifest = options.manifest
+    if manifest is None:
+        manifest = Config().manifest_path()
+    with VmanService(manifest) as service:
         if command == "scan" and isinstance(options, ScanArgs):
             result = await service.scan(options.path)
             detail = (
